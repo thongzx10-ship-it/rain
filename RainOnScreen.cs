@@ -33,13 +33,19 @@ public class RainOnScreen : Script
         public float RainResponse   = 0.6f;  // nho hon = mua nhe van ra nhieu giot
         public bool  Merge          = true;  // giot chay xuong gop giot nho
         public bool  ForceRain      = false; // true = luon mua (de thu khi troi nang)
+        public float FallChance     = 0.75f; // ti le giot se roi xuong (0 den 1)
+        public float FallSpeed      = 1f;    // toc do roi cua cac giot nay
+        public float FallDelayMax   = 4f;    // giot bam tren kinh toi da bao lau (giay) roi moi truot
+        public float FadeTime       = 3.5f;  // thoi gian mo dan khi het tuoi tho (giay)
+        public float FadeDistance   = 0.5f;  // giot roi het bay nhieu lan chieu cao man hinh thi mo hoan toan
     }
 
     class Drop
     {
         public float X, Y, R, Age, Life, PhaseTimer, Speed, TrailAcc;
         public float Stretch = 1f;
-        public bool Sliding, Moving, Dead;
+        public bool Sliding, Moving, Dead, Faller;
+        public float Fallen;
         public int Variant;
     }
 
@@ -126,6 +132,11 @@ public class RainOnScreen : Script
             case "dryingspeed": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.DryingSpeed = Math.Max(0.5f, f); break;
             case "opacity": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.Opacity = Math.Max(0.05f, Math.Min(1f, f)); break;
             case "rainresponse": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.RainResponse = Math.Max(0.1f, Math.Min(2f, f)); break;
+            case "fallchance": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.FallChance = Math.Max(0f, Math.Min(1f, f)); break;
+            case "fallspeed": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.FallSpeed = Math.Max(0.1f, f); break;
+            case "falldelaymax": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.FallDelayMax = Math.Max(0.3f, f); break;
+            case "fadetime": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.FadeTime = Math.Max(0.2f, f); break;
+            case "fadedistance": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.FadeDistance = Math.Max(0f, Math.Min(3f, f)); break;
             case "merge": c.Merge = ParseBool(val, c.Merge); break;
             case "forcerain": c.ForceRain = ParseBool(val, c.ForceRain); break;
         }
@@ -212,6 +223,14 @@ public class RainOnScreen : Script
                 d.Y = Rand(0f, H);
                 d.Life = Rand(c.LifeMin, c.LifeMax);
                 d.Variant = rng.Next(sprites.Count);
+                if (rng.NextDouble() < c.FallChance)
+                {
+                    d.Faller = true;
+                    d.Sliding = true;
+                    d.Moving = false;
+                    d.PhaseTimer = Rand(0.2f, c.FallDelayMax);
+                    d.Speed = Rand(70f, 170f) * k * c.FallSpeed;
+                }
                 drops.Add(d);
             }
             if (drops.Count >= c.MaxDrops) spawnAcc = 0f;
@@ -252,21 +271,25 @@ public class RainOnScreen : Script
                 if (d.PhaseTimer <= 0f)
                 {
                     d.Moving = !d.Moving;
-                    d.PhaseTimer = d.Moving ? Rand(0.3f, 1.2f) : Rand(0.12f, 0.7f);
-                    d.Speed = Rand(70f, 170f) * k * c.SlideSpeed * Math.Max(0.5f, d.R / (c.SlideRadius * k));
+                    d.PhaseTimer = d.Moving ? Rand(0.4f, 1.4f) : Rand(0.1f, 0.6f);
+                    float sizeF = d.Faller ? c.FallSpeed : Math.Max(0.5f, d.R / (c.SlideRadius * k));
+                    d.Speed = Rand(70f, 170f) * k * c.SlideSpeed * sizeF;
                 }
 
                 if (d.Moving)
                 {
-                    float dy = d.Speed * dt;
+                    // cang roi lau cang nhanh (nhu trong luc)
+                    float accel = 1f + 1.5f * Math.Min(1f, d.Fallen / (0.5f * H));
+                    float dy = d.Speed * accel * dt;
                     d.Y += dy;
+                    d.Fallen += dy;
                     d.X += (float)Math.Sin(d.Age * 4f + d.Life) * 6f * k * dt;
                     d.TrailAcc += dy;
-                    d.R -= 0.3f * k * dt;   // mat nuoc dan
-                    d.Stretch += (1.4f - d.Stretch) * Math.Min(1f, 8f * dt);
+                    if (!d.Faller) d.R -= 0.3f * k * dt;   // giot thuong mat nuoc dan
+                    d.Stretch += (1.45f - d.Stretch) * Math.Min(1f, 8f * dt);
 
-                    // de lai vet giot nho phia sau
-                    if (d.TrailAcc > d.R * 2.2f)
+                    // chi giot du lon moi de lai vet giot nho phia sau
+                    if (d.R > 4f * k && d.TrailAcc > d.R * 2.2f)
                     {
                         d.TrailAcc = 0f;
                         if (spawned == null) spawned = new List<Drop>();
@@ -284,7 +307,16 @@ public class RainOnScreen : Script
                     d.Stretch += (1f - d.Stretch) * Math.Min(1f, 6f * dt);
                 }
 
-                if (d.R < 2f * k || d.Y - d.R > H) d.Dead = true;
+                if (d.Faller)
+                {
+                    // roi du xa thi mo hoan toan va bien mat
+                    if (c.FadeDistance > 0f && d.Fallen >= c.FadeDistance * H) d.Dead = true;
+                    if (d.Y - d.R > H) d.Dead = true;
+                }
+                else if (d.R < 2f * k || d.Y - d.R > H)
+                {
+                    d.Dead = true;
+                }
             }
         }
 
@@ -323,11 +355,15 @@ public class RainOnScreen : Script
         {
             Drop d = drops[i];
             float fadeIn = Math.Min(1f, d.Age / 0.3f);
-            float fadeOut = Math.Min(1f, (d.Life - d.Age) / 2.5f);
-            float a = Math.Min(fadeIn, fadeOut) * c.Opacity;
+            float fo = Math.Min(1f, (d.Life - d.Age) / c.FadeTime);
+            fo = fo * fo * (3f - 2f * fo);                       // mo dan muot khi het tuoi tho
+            float fallFrac = (c.FadeDistance > 0f) ? Math.Min(1f, d.Fallen / (c.FadeDistance * H)) : 0f;
+            float fall = 1f - fallFrac;
+            fall = fall * fall * (3f - 2f * fall);               // mo dan muot khi dang roi
+            float a = Math.Min(fadeIn, fo) * fall * c.Opacity;
             if (a <= 0.01f) continue;
 
-            float pop = 0.6f + 0.4f * fadeIn;
+            float pop = (0.6f + 0.4f * fadeIn) * (1f - 0.3f * fallFrac);   // nho dan khi roi
             float rx = d.R * pop;
             float ry = d.R * pop * d.Stretch;
 
