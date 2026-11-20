@@ -1,0 +1,26 @@
+name: build
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tai ScriptHookVDotNet nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p lib shv
+          gh release download -R scripthookvdotnet/scripthookvdotnet-nightly --pattern "*.zip" --dir shv
+          for z in shv/*.zip; do unzip -o "$z" -d shv/x; done
+          cp "$(find shv/x -name ScriptHookVDotNet3.dll | head -1)" lib/
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Build
+        run: dotnet build RainOnScreen.csproj -c Release -o out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RainOnScreen
+          path: out/RainOnScreen.dll
