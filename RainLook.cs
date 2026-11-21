@@ -1,4 +1,5 @@
 using System;
+using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Windows.Forms;
@@ -21,7 +22,6 @@ public class RainLook : Script
         public int   TintG           = 54;
         public int   TintB           = 74;
         public float Vignette        = 0.38f;   // do dam vien toi bon goc (0 den 1)
-        public float VignetteSize    = 0.20f;   // do rong vien toi, ti le chieu ngang man hinh
         public float SkyDarken       = 0.16f;   // lam toi phan tren man hinh (may mua)
         public float SkyHeight       = 0.45f;   // phan tren man hinh bi lam toi cao bao nhieu
         public float NightFactor     = 0.45f;   // ban dem hieu ung nhe di (1 = giu nguyen)
@@ -40,6 +40,8 @@ public class RainLook : Script
     float reloadTimer;
     bool enabled = true;
     float level;   // muc hieu ung hien tai 0..1
+    CustomSprite vig;   // anh vien toi (chuyen sac muot)
+    CustomSprite sky;   // anh lam toi phan tren
 
     public RainLook()
     {
@@ -49,8 +51,22 @@ public class RainLook : Script
         string dir = null;
         try { dir = Path.GetDirectoryName(Filename); } catch { }
         iniPath = dir != null ? Path.Combine(Path.Combine(dir, "RainLook"), "settings.ini") : null;
+        // anh chuyen sac muot cho vien toi va troi toi (thay cho cac dai hinh chu nhat gay vach ke)
+        try
+        {
+            string folder = dir != null ? Path.Combine(dir, "RainLook") : null;
+            if (folder != null)
+            {
+                string pv = Path.Combine(folder, "vignette.png");
+                string ps = Path.Combine(folder, "skygrad.png");
+                if (File.Exists(pv)) vig = new CustomSprite(pv, new SizeF(16, 16), new PointF(0, 0));
+                if (File.Exists(ps)) sky = new CustomSprite(ps, new SizeF(16, 16), new PointF(0, 0));
+            }
+        }
+        catch { vig = null; sky = null; }
+
         LoadIni();
-        Notification.Show("RainLook da nap xong");
+        Notification.Show("RainLook da nap xong" + ((vig == null || sky == null) ? " (thieu anh vignette/skygrad: chi co lop mau lanh)" : ""));
     }
 
     static bool ParseBool(string v, bool def)
@@ -73,7 +89,6 @@ public class RainLook : Script
             case "tintg": if (int.TryParse(val, NumberStyles.Integer, ci, out n)) c.TintG = Math.Max(0, Math.Min(255, n)); break;
             case "tintb": if (int.TryParse(val, NumberStyles.Integer, ci, out n)) c.TintB = Math.Max(0, Math.Min(255, n)); break;
             case "vignette": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.Vignette = Math.Max(0f, Math.Min(1f, f)); break;
-            case "vignettesize": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.VignetteSize = Math.Max(0.02f, Math.Min(0.5f, f)); break;
             case "skydarken": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.SkyDarken = Math.Max(0f, Math.Min(0.8f, f)); break;
             case "skyheight": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.SkyHeight = Math.Max(0.05f, Math.Min(1f, f)); break;
             case "nightfactor": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.NightFactor = Math.Max(0f, Math.Min(1f, f)); break;
@@ -179,34 +194,26 @@ public class RainLook : Script
         // 1) lop mau lanh phu toan man hinh
         Rect(0.5f, 0.5f, 1f, 1f, c.TintR, c.TintG, c.TintB, c.Tint * s);
 
-        // 2) lam toi phan tren (may mua nang): cang len tren cang toi
-        const int skyBands = 16;
-        float bh = c.SkyHeight / skyBands;
-        for (int i = 0; i < skyBands; i++)
+        float W = GTA.UI.Screen.Width, H = GTA.UI.Screen.Height;
+
+        // 2) lam toi phan tren (may mua): anh chuyen sac muot, cang len tren cang toi
+        if (sky != null && c.SkyDarken > 0.001f)
         {
-            float k = 1f - (i + 0.5f) / skyBands;
-            float a = c.SkyDarken * s * k * (float)Math.Sqrt(k);
-            Rect(0.5f, (i + 0.5f) * bh, 1.002f, bh + 0.001f, 10, 16, 26, a);
+            float al = Math.Min(1f, c.SkyDarken * s);
+            sky.Size = new SizeF(W, H * c.SkyHeight);
+            sky.Position = new PointF(0f, 0f);
+            sky.Color = Color.FromArgb((int)(al * 255f), 255, 255, 255);
+            sky.Draw();
         }
 
-        // 3) vien toi bon goc
-        if (c.Vignette > 0.001f)
+        // 3) vien toi bon goc: anh chuyen sac muot phu toan man hinh
+        if (vig != null && c.Vignette > 0.001f)
         {
-            const int vb = 24;
-            float aspect = (float)GTA.UI.Screen.Width / Math.Max(1, GTA.UI.Screen.Height);
-            float bw = c.VignetteSize / vb;
-            float bhh = bw * aspect;
-            for (int i = 0; i < vb; i++)
-            {
-                float k = 1f - (i + 0.5f) / vb;
-                float a = c.Vignette * s * k * k;
-                float cx = (i + 0.5f) * bw;
-                float cy = (i + 0.5f) * bhh;
-                Rect(cx, 0.5f, bw + 0.001f, 1.002f, 0, 0, 0, a);               // trai
-                Rect(1f - cx, 0.5f, bw + 0.001f, 1.002f, 0, 0, 0, a);          // phai
-                Rect(0.5f, cy, 1.002f, bhh + 0.001f, 0, 0, 0, a);              // tren
-                Rect(0.5f, 1f - cy, 1.002f, bhh + 0.001f, 0, 0, 0, a);         // duoi
-            }
+            float al = Math.Min(1f, c.Vignette * s);
+            vig.Size = new SizeF(W, H);
+            vig.Position = new PointF(0f, 0f);
+            vig.Color = Color.FromArgb((int)(al * 255f), 255, 255, 255);
+            vig.Draw();
         }
     }
 }
