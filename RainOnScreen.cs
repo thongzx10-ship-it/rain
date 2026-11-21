@@ -57,7 +57,7 @@ public class RainOnScreen : Script
         public bool  SplashEnabled    = true;   // chay xe tren duong uot thi nuoc bang len man hinh
         public float SplashPerMinute  = 6f;     // so dot nuoc bang manh moi phut (chay nhanh + duong uot het co)
         public float SplashMist       = 18f;    // so giot suong nuoc li ti bang len moi giay khi chay nhanh
-        public float SplashMinSpeed   = 2.5f;   // toc do toi thieu de nuoc bang len (m/s, 2.5 = khoang 9 km/h). Dung yen thi khong bang
+        public float SplashMinSpeed   = 9f;     // toc do toi thieu de nuoc bang len (m/s, 9 = khoang 32 km/h)
         public float RoadDryTime      = 150f;   // sau khi tanh mua duong con uot bao nhieu giay
         public bool  ForceWetRoad     = false;  // true = duong luon uot (de thu khi troi nang)
     }
@@ -345,10 +345,10 @@ public class RainOnScreen : Script
 
         // ---- duong uot: nuoc bang len man hinh khi chay xe ----
         if (c.ForceWetRoad) wetness = 1f;
-        else if (rain > 0.05f) wetness = Math.Min(1f, Math.Max(wetness, rain) + rain * dt / 30f);   // mua toi dau duong uot toi do
+        else if (rain > 0.05f) wetness = Math.Min(1f, wetness + rain * dt / 15f);
         else wetness = Math.Max(0f, wetness - dt / c.RoadDryTime);
 
-        if (c.SplashEnabled && !sheltered && wetness > 0.1f
+        if (c.SplashEnabled && !sheltered && wetness > 0.2f
             && Function.Call<bool>(Hash.IS_PED_IN_ANY_VEHICLE, ped.Handle, false))
         {
             Vehicle sv = ped.CurrentVehicle;
@@ -356,10 +356,10 @@ public class RainOnScreen : Script
             if (vs > c.SplashMinSpeed)
             {
                 float spd = Math.Min(1f, (vs - c.SplashMinSpeed) / 20f);
-                float wf = (wetness - 0.1f) / 0.9f;
+                float wf = (wetness - 0.2f) / 0.8f;
 
                 // dot nuoc bang manh (nhu can qua vung nuoc), ngau nhien
-                if (rng.NextDouble() < (c.SplashPerMinute / 60.0) * wf * (0.1 + 0.9 * spd) * dt)
+                if (rng.NextDouble() < (c.SplashPerMinute / 60.0) * wf * (0.3 + 0.7 * spd) * dt)
                     SpawnSplash(c, k, W, H, windMode, rl, rr, rt, rb,
                                 (int)(Rand(14f, 34f) * (0.5f + 0.5f * spd)), 0.6f + 0.8f * spd, false);
 
