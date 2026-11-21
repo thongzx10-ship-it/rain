@@ -45,6 +45,15 @@ public class RainOnScreen : Script
         public bool  HideOnlyFirstPerson = true; // true = chi mat khi o goc nhin thu nhat, goc nhin thu ba van hien
         public bool  ShowOnBikes    = true;  // xe may / xe dap / thuyen (ngoai troi) thi van hien giot
         public float HideFadeTime   = 0.6f;  // thoi gian giot mo han khi vao o to / vao nha (giay)
+        public bool  WindshieldMode   = true;   // goc nhin thu nhat trong xe: giot dong tren kinh chan gio (false = an het)
+        public float WindshieldLeft   = 0.06f;  // vung kinh chan gio, tinh theo ti le man hinh (0 den 1)
+        public float WindshieldRight  = 0.94f;
+        public float WindshieldTop    = 0.04f;
+        public float WindshieldBottom = 0.62f;
+        public float WindshieldWind   = 1f;     // xe chay nhanh thi gio day giot len va toa sang hai ben (0 = tat)
+        public bool  WiperEnabled     = true;   // can gat nuoc quet sach giot
+        public float WiperInterval    = 4f;     // khoang cach giua hai lan quet (giay), mua to quet nhanh hon
+        public float WiperWidth       = 0.08f;  // be rong vet quet, ti le chieu ngang man hinh
     }
 
     class Drop
@@ -53,6 +62,8 @@ public class RainOnScreen : Script
         public float Stretch = 1f;
         public bool Sliding, Moving, Dead, Faller;
         public float Fallen;
+        public bool Wiped;
+        public float Wipe;
         public int Variant;
     }
 
@@ -66,6 +77,9 @@ public class RainOnScreen : Script
     bool enabled = true;
     bool loadFailed;
     float spawnAcc;
+    float wiperTimer;
+    float wiperPos = -1f;
+    float wiperDir = 1f;
     float hideAlpha = 1f;   // 1 = hien, 0 = an hoan toan (vao o to / vao nha)
 
     public RainOnScreen()
@@ -148,6 +162,15 @@ public class RainOnScreen : Script
             case "splattime": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.SplatTime = Math.Max(0.05f, f); break;
             case "spreadamount": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.SpreadAmount = Math.Max(0f, Math.Min(3f, f)); break;
             case "spreadflatten": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.SpreadFlatten = Math.Max(0f, Math.Min(1.5f, f)); break;
+            case "windshieldmode": c.WindshieldMode = ParseBool(val, c.WindshieldMode); break;
+            case "windshieldleft": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.WindshieldLeft = Math.Max(0f, Math.Min(0.9f, f)); break;
+            case "windshieldright": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.WindshieldRight = Math.Max(0.1f, Math.Min(1f, f)); break;
+            case "windshieldtop": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.WindshieldTop = Math.Max(0f, Math.Min(0.9f, f)); break;
+            case "windshieldbottom": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.WindshieldBottom = Math.Max(0.1f, Math.Min(1f, f)); break;
+            case "windshieldwind": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.WindshieldWind = Math.Max(0f, Math.Min(3f, f)); break;
+            case "wiperenabled": c.WiperEnabled = ParseBool(val, c.WiperEnabled); break;
+            case "wiperinterval": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.WiperInterval = Math.Max(1f, Math.Min(30f, f)); break;
+            case "wiperwidth": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.WiperWidth = Math.Max(0.02f, Math.Min(0.5f, f)); break;
             case "hideonlyfirstperson": c.HideOnlyFirstPerson = ParseBool(val, c.HideOnlyFirstPerson); break;
             case "hideinvehicle": c.HideInVehicle = ParseBool(val, c.HideInVehicle); break;
             case "showonbikes": c.ShowOnBikes = ParseBool(val, c.ShowOnBikes); break;
@@ -221,25 +244,42 @@ public class RainOnScreen : Script
         bool sheltered = ped == null || !ped.Exists()
                          || Function.Call<int>(Hash.GET_INTERIOR_FROM_ENTITY, ped.Handle) != 0;
 
-        // vao o to + goc nhin thu nhat thi giot nuoc mat di (tru xe may, xe dap, thuyen neu ShowOnBikes = true)
-        if (!sheltered && c.HideInVehicle && Function.Call<bool>(Hash.IS_PED_IN_ANY_VEHICLE, ped.Handle, false))
+        // trong o to: goc nhin thu nhat -> giot dong tren kinh chan gio (hoac an het neu WindshieldMode = false)
+        bool windMode = false;
+        float sf = 0f;   // toc do xe, 0 den 1 (1 = khoang 100 km/h)
+        bool inCar = !sheltered && c.HideInVehicle
+                     && Function.Call<bool>(Hash.IS_PED_IN_ANY_VEHICLE, ped.Handle, false);
+        if (inCar)
         {
             bool openAir = false;
-            if (c.ShowOnBikes)
+            Vehicle veh = ped.CurrentVehicle;
+            if (veh != null && veh.Exists())
             {
-                Vehicle veh = ped.CurrentVehicle;
-                if (veh != null && veh.Exists())
+                if (c.ShowOnBikes)
                 {
                     int cls = Function.Call<int>(Hash.GET_VEHICLE_CLASS, veh.Handle);
                     openAir = (cls == 8 || cls == 13 || cls == 14);   // 8 = xe may, 13 = xe dap, 14 = thuyen
                 }
+                sf = Math.Min(1f, veh.Speed / 28f);
             }
             // goc nhin trong xe: 0-2 = goc thu ba (gan/vua/xa), 3 = dien anh, 4 = goc nhin thu nhat
-            bool firstPerson = true;
-            if (c.HideOnlyFirstPerson)
-                firstPerson = Function.Call<int>(Hash.GET_FOLLOW_VEHICLE_CAM_VIEW_MODE) == 4;
-            if (!openAir && firstPerson) sheltered = true;
+            bool firstPerson = Function.Call<int>(Hash.GET_FOLLOW_VEHICLE_CAM_VIEW_MODE) == 4;
+            if (!openAir)
+            {
+                if (firstPerson)
+                {
+                    if (c.WindshieldMode) windMode = true; else sheltered = true;
+                }
+                else if (!c.HideOnlyFirstPerson)
+                {
+                    sheltered = true;
+                }
+            }
         }
+
+        // vung kinh chan gio (tinh bang pixel)
+        float rl = W * c.WindshieldLeft, rr = W * Math.Max(c.WindshieldRight, c.WindshieldLeft + 0.1f);
+        float rt = H * c.WindshieldTop, rb = H * Math.Max(c.WindshieldBottom, c.WindshieldTop + 0.1f);
 
         bool wet = rain > 0.03f && !sheltered;
 
@@ -257,17 +297,18 @@ public class RainOnScreen : Script
         // ---- sinh giot moi ----
         if (wet)
         {
-            spawnAcc += inten * c.SpawnPerSecond * dt;
+            int cap = windMode ? (int)(c.MaxDrops * 0.7f) : c.MaxDrops;
+            spawnAcc += inten * c.SpawnPerSecond * dt * (windMode ? (1f + 0.8f * sf) : 1f);
             int guard = 0;
-            while (spawnAcc >= 1f && drops.Count < c.MaxDrops && guard++ < 60)
+            while (spawnAcc >= 1f && drops.Count < cap && guard++ < 60)
             {
                 spawnAcc -= 1f;
                 // mua cang to thi cang co nhieu giot lon, nhung phan lon van la giot nho
                 float t = (float)Math.Pow(rng.NextDouble(), 3.2 - 1.6 * inten);
                 Drop d = new Drop();
                 d.R = (c.MinRadius + (c.MaxRadius - c.MinRadius) * 0.55f * t) * k;
-                d.X = Rand(0f, W);
-                d.Y = Rand(0f, H);
+                d.X = windMode ? Rand(rl, rr) : Rand(0f, W);
+                d.Y = windMode ? Rand(rt, rb) : Rand(0f, H);
                 d.Life = Rand(c.LifeMin, c.LifeMax);
                 d.Variant = rng.Next(sprites.Count);
                 if (rng.NextDouble() < c.FallChance)
@@ -280,11 +321,44 @@ public class RainOnScreen : Script
                 }
                 drops.Add(d);
             }
-            if (drops.Count >= c.MaxDrops) spawnAcc = 0f;
+            if (drops.Count >= cap) spawnAcc = 0f;
         }
         else
         {
             spawnAcc = 0f;
+        }
+
+        // ---- can gat nuoc (chi khi o trong xe, goc nhin thu nhat, dang mua) ----
+        if (windMode && c.WiperEnabled && rain > 0.1f)
+        {
+            if (wiperPos < 0f)
+            {
+                wiperTimer += dt;
+                float interval = Math.Max(0.8f, c.WiperInterval * (1.4f - 0.9f * rain));   // mua cang to quet cang nhanh
+                if (wiperTimer >= interval)
+                {
+                    wiperTimer = 0f;
+                    wiperPos = 0f;
+                    wiperDir = -wiperDir;
+                }
+            }
+            if (wiperPos >= 0f)
+            {
+                wiperPos += dt / 0.9f;
+                float wx = wiperDir > 0f ? rl + (rr - rl) * wiperPos : rr - (rr - rl) * wiperPos;
+                float wHalf = c.WiperWidth * W * 0.5f;
+                for (int wi = 0; wi < drops.Count; wi++)
+                {
+                    Drop wd = drops[wi];
+                    if (!wd.Wiped && Math.Abs(wd.X - wx) < wHalf) wd.Wiped = true;
+                }
+                if (wiperPos >= 1f) wiperPos = -1f;
+            }
+        }
+        else
+        {
+            wiperPos = -1f;
+            wiperTimer = 0f;
         }
 
         float ageRate = wet ? 1f : c.DryingSpeed;
@@ -295,6 +369,18 @@ public class RainOnScreen : Script
         {
             Drop d = drops[i];
             if (d.Dead) continue;
+
+            // giot bi can gat quet hoac nam ngoai vung kinh chan gio: mo nhanh roi mat
+            if (windMode && !d.Wiped)
+            {
+                float mg = 0.03f * H;
+                if (d.X < rl - mg || d.X > rr + mg || d.Y < rt - mg || d.Y > rb + mg) d.Wiped = true;
+            }
+            if (d.Wiped)
+            {
+                d.Wipe += dt / 0.3f;
+                if (d.Wipe >= 1f) { d.Dead = true; continue; }
+            }
 
             d.Age += dt * ageRate;
             if (d.Age >= d.Life) { d.Dead = true; continue; }
@@ -310,6 +396,17 @@ public class RainOnScreen : Script
                     d.Moving = false;
                     d.PhaseTimer = Rand(0.1f, 0.4f);
                     d.Speed = Rand(60f, 140f) * k * c.SlideSpeed * (d.R / (c.SlideRadius * k));
+                }
+
+                // xe chay nhanh: gio day giot len (giot lon bi day truoc)
+                if (!d.Sliding && windMode && c.WindshieldWind > 0f && sf > 0.15f && d.R > 1.8f * k
+                    && rng.NextDouble() < (0.25 * sf * c.WindshieldWind) * dt * (1.0 + d.R / (6.0 * k)))
+                {
+                    d.Sliding = true;
+                    d.Faller = true;
+                    d.Moving = true;
+                    d.PhaseTimer = Rand(0.5f, 1.5f);
+                    d.Speed = Rand(80f, 200f) * k;
                 }
             }
             else
@@ -327,9 +424,12 @@ public class RainOnScreen : Script
                 {
                     // cang roi lau cang nhanh (nhu trong luc)
                     float accel = 1f + 1.5f * Math.Min(1f, d.Fallen / (0.5f * H));
-                    float dy = d.Speed * accel * dt;
-                    d.Y += dy;
+                    // xe chay nhanh thi giot bi gio day len va toa sang hai ben, con lai thi truot xuong
+                    float dirY = (windMode && sf > 0.2f && c.WindshieldWind > 0f) ? -1f : 1f;
+                    float dy = d.Speed * accel * dt * (dirY < 0f ? (0.5f + 1.5f * sf * c.WindshieldWind) : 1f);
+                    d.Y += dy * dirY;
                     d.Fallen += dy;
+                    if (dirY < 0f) d.X += (d.X - W * 0.5f) * 0.10f * sf * dt;
                     d.X += (float)Math.Sin(d.Age * 4f + d.Life) * 6f * k * dt;
                     d.TrailAcc += dy;
                     if (!d.Faller) d.R -= 0.3f * k * dt;   // giot thuong mat nuoc dan
@@ -343,7 +443,7 @@ public class RainOnScreen : Script
                         Drop tr = new Drop();
                         tr.R = Math.Max(1.5f * k, d.R * Rand(0.16f, 0.30f));
                         tr.X = d.X + Rand(-1.5f, 1.5f) * k;
-                        tr.Y = d.Y - d.R * 1.2f;
+                        tr.Y = d.Y - dirY * d.R * 1.2f;
                         tr.Life = Rand(3f, 8f);
                         tr.Variant = rng.Next(sprites.Count);
                         spawned.Add(tr);
@@ -358,7 +458,7 @@ public class RainOnScreen : Script
                 {
                     // roi du xa thi mo hoan toan va bien mat
                     if (c.FadeDistance > 0f && d.Fallen >= c.FadeDistance * H) d.Dead = true;
-                    if (d.Y - d.R > H) d.Dead = true;
+                    if (d.Y - d.R > H || d.Y + d.R < 0f) d.Dead = true;
                 }
                 else if (d.R < 2f * k || d.Y - d.R > H)
                 {
@@ -407,7 +507,19 @@ public class RainOnScreen : Script
             float fallFrac = (c.FadeDistance > 0f) ? Math.Min(1f, d.Fallen / (c.FadeDistance * H)) : 0f;
             float fall = 1f - fallFrac;
             fall = fall * fall * (3f - 2f * fall);               // mo dan muot khi dang roi
-            float a = Math.Min(fadeIn, fo) * fall * c.Opacity * hideAlpha;
+            // vien kinh chan gio mo dan de khong bi cat cung
+            float edge = 1f;
+            if (windMode)
+            {
+                float ex = 0.04f * W, ey = 0.06f * H;
+                float f1 = Math.Max(0f, Math.Min(1f, (d.X - rl) / ex));
+                float f2 = Math.Max(0f, Math.Min(1f, (rr - d.X) / ex));
+                float f3 = Math.Max(0f, Math.Min(1f, (d.Y - rt) / ey));
+                float f4 = Math.Max(0f, Math.Min(1f, (rb - d.Y) / ey));
+                edge = Math.Min(Math.Min(f1, f2), Math.Min(f3, f4));
+                edge = edge * edge * (3f - 2f * edge);
+            }
+            float a = Math.Min(fadeIn, fo) * fall * c.Opacity * hideAlpha * edge * (1f - d.Wipe);
             if (a <= 0.01f) continue;
 
             // loe ra luc moi xuat hien: nho -> vuot qua mot chut -> chung lai (easeOutBack)
@@ -423,6 +535,7 @@ public class RainOnScreen : Script
 
             float rx = d.R * pop * (1f + flat) * (1f + spread);
             float ry = d.R * pop * d.Stretch * (1f - 0.4f * flat) * (1f + 0.7f * spread);
+            rx *= 1f + 0.6f * d.Wipe;   // giot bi gat thi bet ngang ra
 
             CustomSprite sp = sprites[d.Variant % sprites.Count];
             sp.Size = new SizeF(rx * 2f, ry * 2f);
