@@ -18,9 +18,19 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
-      - name: Build
-        run: dotnet build RainOnScreen.csproj -c Release -o out
+      - name: Build tat ca script
+        run: |
+          mkdir -p out
+          rm -f failed.txt
+          for p in *.csproj; do
+            rm -rf obj bin
+            dotnet build "$p" -c Release -o out || echo "$p" >> failed.txt
+          done
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: RainOnScreen
-          path: out/RainOnScreen.dll
+          path: out/*.dll
+      - name: Bao loi neu co script khong bien dich duoc
+        run: |
+          if [ -f failed.txt ]; then echo "SCRIPT LOI:"; cat failed.txt; exit 1; fi
