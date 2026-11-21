@@ -42,6 +42,7 @@ public class RainOnScreen : Script
         public float SpreadAmount   = 0.6f;  // luc mo dan giot toa rong them bay nhieu (0.6 = +60%)
         public float SpreadFlatten  = 0.35f; // do det/loe ngang luc moi xuat hien (0 = khong det)
         public bool  HideInVehicle  = true;  // vao o to thi giot nuoc mat di
+        public bool  HideOnlyFirstPerson = true; // true = chi mat khi o goc nhin thu nhat, goc nhin thu ba van hien
         public bool  ShowOnBikes    = true;  // xe may / xe dap / thuyen (ngoai troi) thi van hien giot
         public float HideFadeTime   = 0.6f;  // thoi gian giot mo han khi vao o to / vao nha (giay)
     }
@@ -147,6 +148,7 @@ public class RainOnScreen : Script
             case "splattime": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.SplatTime = Math.Max(0.05f, f); break;
             case "spreadamount": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.SpreadAmount = Math.Max(0f, Math.Min(3f, f)); break;
             case "spreadflatten": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.SpreadFlatten = Math.Max(0f, Math.Min(1.5f, f)); break;
+            case "hideonlyfirstperson": c.HideOnlyFirstPerson = ParseBool(val, c.HideOnlyFirstPerson); break;
             case "hideinvehicle": c.HideInVehicle = ParseBool(val, c.HideInVehicle); break;
             case "showonbikes": c.ShowOnBikes = ParseBool(val, c.ShowOnBikes); break;
             case "hidefadetime": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.HideFadeTime = Math.Max(0.05f, Math.Min(10f, f)); break;
@@ -219,7 +221,7 @@ public class RainOnScreen : Script
         bool sheltered = ped == null || !ped.Exists()
                          || Function.Call<int>(Hash.GET_INTERIOR_FROM_ENTITY, ped.Handle) != 0;
 
-        // vao o to thi giot nuoc mat di (tru xe may, xe dap, thuyen neu ShowOnBikes = true)
+        // vao o to + goc nhin thu nhat thi giot nuoc mat di (tru xe may, xe dap, thuyen neu ShowOnBikes = true)
         if (!sheltered && c.HideInVehicle && Function.Call<bool>(Hash.IS_PED_IN_ANY_VEHICLE, ped.Handle, false))
         {
             bool openAir = false;
@@ -232,7 +234,11 @@ public class RainOnScreen : Script
                     openAir = (cls == 8 || cls == 13 || cls == 14);   // 8 = xe may, 13 = xe dap, 14 = thuyen
                 }
             }
-            if (!openAir) sheltered = true;
+            // goc nhin trong xe: 0-2 = goc thu ba (gan/vua/xa), 3 = dien anh, 4 = goc nhin thu nhat
+            bool firstPerson = true;
+            if (c.HideOnlyFirstPerson)
+                firstPerson = Function.Call<int>(Hash.GET_FOLLOW_VEHICLE_CAM_VIEW_MODE) == 4;
+            if (!openAir && firstPerson) sheltered = true;
         }
 
         bool wet = rain > 0.03f && !sheltered;
