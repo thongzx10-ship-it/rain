@@ -54,6 +54,12 @@ public class RainOnScreen : Script
         public bool  WiperEnabled     = true;   // can gat nuoc quet sach giot
         public float WiperInterval    = 4f;     // khoang cach giua hai lan quet (giay), mua to quet nhanh hon
         public float WiperWidth       = 0.08f;  // be rong vet quet, ti le chieu ngang man hinh
+        public bool  SplashEnabled    = true;   // chay xe tren duong uot thi nuoc bang len man hinh
+        public float SplashPerMinute  = 6f;     // so dot nuoc bang manh moi phut (chay nhanh + duong uot het co)
+        public float SplashMist       = 18f;    // so giot suong nuoc li ti bang len moi giay khi chay nhanh
+        public float SplashMinSpeed   = 2.5f;   // toc do toi thieu de nuoc bang len (m/s, 2.5 = khoang 9 km/h). Dung yen thi khong bang
+        public float RoadDryTime      = 150f;   // sau khi tanh mua duong con uot bao nhieu giay
+        public bool  ForceWetRoad     = false;  // true = duong luon uot (de thu khi troi nang)
     }
 
     class Drop
@@ -64,6 +70,8 @@ public class RainOnScreen : Script
         public float Fallen;
         public bool Wiped;
         public float Wipe;
+        public bool Burst;          // dang bay (nuoc bang len)
+        public float VX, VY;        // van toc luc bang (px/giay)
         public int Variant;
     }
 
@@ -77,6 +85,8 @@ public class RainOnScreen : Script
     bool enabled = true;
     bool loadFailed;
     float spawnAcc;
+    float wetness;      // do uot cua mat duong 0..1
+    float mistAcc;
     float wiperTimer;
     float wiperPos = -1f;
     float wiperDir = 1f;
@@ -162,6 +172,12 @@ public class RainOnScreen : Script
             case "splattime": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.SplatTime = Math.Max(0.05f, f); break;
             case "spreadamount": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.SpreadAmount = Math.Max(0f, Math.Min(3f, f)); break;
             case "spreadflatten": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.SpreadFlatten = Math.Max(0f, Math.Min(1.5f, f)); break;
+            case "splashenabled": c.SplashEnabled = ParseBool(val, c.SplashEnabled); break;
+            case "splashperminute": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.SplashPerMinute = Math.Max(0f, Math.Min(120f, f)); break;
+            case "splashmist": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.SplashMist = Math.Max(0f, Math.Min(200f, f)); break;
+            case "splashminspeed": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.SplashMinSpeed = Math.Max(0f, Math.Min(60f, f)); break;
+            case "roaddrytime": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.RoadDryTime = Math.Max(5f, Math.Min(1800f, f)); break;
+            case "forcewetroad": c.ForceWetRoad = ParseBool(val, c.ForceWetRoad); break;
             case "windshieldmode": c.WindshieldMode = ParseBool(val, c.WindshieldMode); break;
             case "windshieldleft": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.WindshieldLeft = Math.Max(0f, Math.Min(0.9f, f)); break;
             case "windshieldright": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.WindshieldRight = Math.Max(0.1f, Math.Min(1f, f)); break;
@@ -211,6 +227,52 @@ public class RainOnScreen : Script
     }
 
     float Rand(float a, float b) { return a + (float)rng.NextDouble() * (b - a); }
+
+    // nuoc bang len man hinh: giot bay nhanh roi dinh lai (tiny = suong nuoc li ti)
+    void SpawnSplash(Cfg c, float k, float W, float H, bool windMode, float rl, float rr, float rt, float rb,
+                     int count, float power, bool tiny)
+    {
+        float x0 = windMode ? rl : 0f, x1 = windMode ? rr : W;
+        float y0 = windMode ? rb - 0.30f * (rb - rt) : 0.55f * H;
+        float y1 = windMode ? rb : H;
+        float cx = Rand(x0 + 0.15f * (x1 - x0), x1 - 0.15f * (x1 - x0));
+        float spreadX = 0.14f * (x1 - x0);
+
+        for (int n = 0; n < count && drops.Count < c.MaxDrops + 150; n++)
+        {
+            Drop d = new Drop();
+            if (tiny)
+            {
+                d.R = Rand(c.MinRadius * 0.7f, c.MinRadius * 1.8f) * k;
+                d.X = Rand(x0, x1);
+                d.Life = Rand(1.5f, 4f);
+            }
+            else
+            {
+                float t = (float)Math.Pow(rng.NextDouble(), 2.0);
+                d.R = (c.MinRadius + (c.MaxRadius * 0.6f - c.MinRadius) * t) * k;
+                d.X = Math.Max(x0, Math.Min(x1, cx + Rand(-1f, 1f) * spreadX));
+                d.Life = Rand(3f, 9f);
+            }
+            d.Y = Rand(y0, y1);
+            d.Age = 0.2f;
+            d.Variant = rng.Next(sprites.Count);
+            d.Burst = true;
+            d.VY = -Rand(300f, 900f) * k * power;
+            d.VX = ((d.X - W * 0.5f) / W * Rand(300f, 800f) + Rand(-150f, 150f)) * k * power;
+
+            // mot nua giot sau khi dinh lai se chay thanh vet nuoc
+            if (!tiny && rng.NextDouble() < 0.5)
+            {
+                d.Faller = true;
+                d.Sliding = true;
+                d.Moving = false;
+                d.PhaseTimer = Rand(0.8f, 2.5f);
+                d.Speed = Rand(70f, 170f) * k * c.FallSpeed;
+            }
+            drops.Add(d);
+        }
+    }
 
     void OnTick(object sender, EventArgs e)
     {
@@ -280,6 +342,37 @@ public class RainOnScreen : Script
         // vung kinh chan gio (tinh bang pixel)
         float rl = W * c.WindshieldLeft, rr = W * Math.Max(c.WindshieldRight, c.WindshieldLeft + 0.1f);
         float rt = H * c.WindshieldTop, rb = H * Math.Max(c.WindshieldBottom, c.WindshieldTop + 0.1f);
+
+        // ---- duong uot: nuoc bang len man hinh khi chay xe ----
+        if (c.ForceWetRoad) wetness = 1f;
+        else if (rain > 0.05f) wetness = Math.Min(1f, Math.Max(wetness, rain) + rain * dt / 30f);   // mua toi dau duong uot toi do
+        else wetness = Math.Max(0f, wetness - dt / c.RoadDryTime);
+
+        if (c.SplashEnabled && !sheltered && wetness > 0.1f
+            && Function.Call<bool>(Hash.IS_PED_IN_ANY_VEHICLE, ped.Handle, false))
+        {
+            Vehicle sv = ped.CurrentVehicle;
+            float vs = (sv != null && sv.Exists()) ? sv.Speed : 0f;
+            if (vs > c.SplashMinSpeed)
+            {
+                float spd = Math.Min(1f, (vs - c.SplashMinSpeed) / 20f);
+                float wf = (wetness - 0.1f) / 0.9f;
+
+                // dot nuoc bang manh (nhu can qua vung nuoc), ngau nhien
+                if (rng.NextDouble() < (c.SplashPerMinute / 60.0) * wf * (0.1 + 0.9 * spd) * dt)
+                    SpawnSplash(c, k, W, H, windMode, rl, rr, rt, rb,
+                                (int)(Rand(14f, 34f) * (0.5f + 0.5f * spd)), 0.6f + 0.8f * spd, false);
+
+                // suong nuoc li ti bang len lien tuc khi chay nhanh
+                mistAcc += c.SplashMist * wf * spd * dt;
+                int mistGuard = 0;
+                while (mistAcc >= 1f && mistGuard++ < 20)
+                {
+                    mistAcc -= 1f;
+                    SpawnSplash(c, k, W, H, windMode, rl, rr, rt, rb, 1, 0.6f + 0.6f * spd, true);
+                }
+            }
+        }
 
         bool wet = rain > 0.03f && !sheltered;
 
@@ -380,6 +473,19 @@ public class RainOnScreen : Script
             {
                 d.Wipe += dt / 0.3f;
                 if (d.Wipe >= 1f) { d.Dead = true; continue; }
+            }
+
+            // nuoc bang len: bay nhanh roi cham dan, dinh lai tren kinh
+            if (d.Burst)
+            {
+                d.X += d.VX * dt;
+                d.Y += d.VY * dt;
+                float drag = (float)Math.Exp(-4.5 * dt);
+                d.VX *= drag;
+                d.VY *= drag;
+                d.Stretch = 1f + Math.Min(0.8f, Math.Abs(d.VY) / (1000f * k));
+                if (Math.Abs(d.VX) + Math.Abs(d.VY) < 12f * k) { d.Burst = false; d.Stretch = 1f; }
+                if (d.Y + d.R < 0f || d.X < -d.R || d.X > W + d.R) { d.Dead = true; continue; }
             }
 
             d.Age += dt * ageRate;
