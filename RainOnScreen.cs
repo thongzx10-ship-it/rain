@@ -38,6 +38,12 @@ public class RainOnScreen : Script
         public float FallDelayMax   = 4f;    // giot bam tren kinh toi da bao lau (giay) roi moi truot
         public float FadeTime       = 3.5f;  // thoi gian mo dan khi het tuoi tho (giay)
         public float FadeDistance   = 0.5f;  // giot roi het bay nhieu lan chieu cao man hinh thi mo hoan toan
+        public float SplatTime      = 0.3f;  // thoi gian giot loe ra luc moi xuat hien (giay)
+        public float SpreadAmount   = 0.6f;  // luc mo dan giot toa rong them bay nhieu (0.6 = +60%)
+        public float SpreadFlatten  = 0.35f; // do det/loe ngang luc moi xuat hien (0 = khong det)
+        public bool  HideInVehicle  = true;  // vao o to thi giot nuoc mat di
+        public bool  ShowOnBikes    = true;  // xe may / xe dap / thuyen (ngoai troi) thi van hien giot
+        public float HideFadeTime   = 0.6f;  // thoi gian giot mo han khi vao o to / vao nha (giay)
     }
 
     class Drop
@@ -59,6 +65,7 @@ public class RainOnScreen : Script
     bool enabled = true;
     bool loadFailed;
     float spawnAcc;
+    float hideAlpha = 1f;   // 1 = hien, 0 = an hoan toan (vao o to / vao nha)
 
     public RainOnScreen()
     {
@@ -137,6 +144,12 @@ public class RainOnScreen : Script
             case "falldelaymax": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.FallDelayMax = Math.Max(0.3f, f); break;
             case "fadetime": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.FadeTime = Math.Max(0.2f, f); break;
             case "fadedistance": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.FadeDistance = Math.Max(0f, Math.Min(3f, f)); break;
+            case "splattime": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.SplatTime = Math.Max(0.05f, f); break;
+            case "spreadamount": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.SpreadAmount = Math.Max(0f, Math.Min(3f, f)); break;
+            case "spreadflatten": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.SpreadFlatten = Math.Max(0f, Math.Min(1.5f, f)); break;
+            case "hideinvehicle": c.HideInVehicle = ParseBool(val, c.HideInVehicle); break;
+            case "showonbikes": c.ShowOnBikes = ParseBool(val, c.ShowOnBikes); break;
+            case "hidefadetime": if (float.TryParse(val, NumberStyles.Float, ci, out f)) c.HideFadeTime = Math.Max(0.05f, Math.Min(10f, f)); break;
             case "merge": c.Merge = ParseBool(val, c.Merge); break;
             case "forcerain": c.ForceRain = ParseBool(val, c.ForceRain); break;
         }
@@ -205,7 +218,35 @@ public class RainOnScreen : Script
         Ped ped = Game.Player.Character;
         bool sheltered = ped == null || !ped.Exists()
                          || Function.Call<int>(Hash.GET_INTERIOR_FROM_ENTITY, ped.Handle) != 0;
+
+        // vao o to thi giot nuoc mat di (tru xe may, xe dap, thuyen neu ShowOnBikes = true)
+        if (!sheltered && c.HideInVehicle && Function.Call<bool>(Hash.IS_PED_IN_ANY_VEHICLE, ped.Handle, false))
+        {
+            bool openAir = false;
+            if (c.ShowOnBikes)
+            {
+                Vehicle veh = ped.CurrentVehicle;
+                if (veh != null && veh.Exists())
+                {
+                    int cls = Function.Call<int>(Hash.GET_VEHICLE_CLASS, veh.Handle);
+                    openAir = (cls == 8 || cls == 13 || cls == 14);   // 8 = xe may, 13 = xe dap, 14 = thuyen
+                }
+            }
+            if (!openAir) sheltered = true;
+        }
+
         bool wet = rain > 0.03f && !sheltered;
+
+        // mo han nhanh khi vao cho kin, hien lai khi ra ngoai
+        float hideStep = dt / c.HideFadeTime;
+        if (sheltered) hideAlpha = Math.Max(0f, hideAlpha - hideStep);
+        else hideAlpha = Math.Min(1f, hideAlpha + hideStep * 2f);
+        if (hideAlpha <= 0f)
+        {
+            if (drops.Count > 0) drops.Clear();
+            spawnAcc = 0f;
+            return;
+        }
 
         // ---- sinh giot moi ----
         if (wet)
@@ -360,12 +401,22 @@ public class RainOnScreen : Script
             float fallFrac = (c.FadeDistance > 0f) ? Math.Min(1f, d.Fallen / (c.FadeDistance * H)) : 0f;
             float fall = 1f - fallFrac;
             fall = fall * fall * (3f - 2f * fall);               // mo dan muot khi dang roi
-            float a = Math.Min(fadeIn, fo) * fall * c.Opacity;
+            float a = Math.Min(fadeIn, fo) * fall * c.Opacity * hideAlpha;
             if (a <= 0.01f) continue;
 
-            float pop = (0.6f + 0.4f * fadeIn) * (1f - 0.3f * fallFrac);   // nho dan khi roi
-            float rx = d.R * pop;
-            float ry = d.R * pop * d.Stretch;
+            // loe ra luc moi xuat hien: nho -> vuot qua mot chut -> chung lai (easeOutBack)
+            float st = Math.Min(1f, d.Age / c.SplatTime);
+            float em1 = st - 1f;
+            float eb = 1f + 2.70158f * em1 * em1 * em1 + 1.70158f * em1 * em1;
+            float pop = (0.3f + 0.7f * eb) * (1f - 0.3f * fallFrac);
+
+            // luc mo dan: toa rong va det ra nhu vet nuoc loang
+            float prog = 1f - Math.Min(1f, (d.Life - d.Age) / c.FadeTime);
+            float spread = c.SpreadAmount * prog;
+            float flat = c.SpreadFlatten * (1f - st);
+
+            float rx = d.R * pop * (1f + flat) * (1f + spread);
+            float ry = d.R * pop * d.Stretch * (1f - 0.4f * flat) * (1f + 0.7f * spread);
 
             CustomSprite sp = sprites[d.Variant % sprites.Count];
             sp.Size = new SizeF(rx * 2f, ry * 2f);
