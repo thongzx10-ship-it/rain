@@ -33,6 +33,7 @@ public class ExhaustPops : Script
     static readonly Hash H_DISABLE_CONTROL_ACTION = (Hash)0xFE99B66D079CF6BCUL;
     static readonly Hash H_DRAW_LIGHT_WITH_RANGE = (Hash)0xF2A1B2771A01DBD4UL;
     static readonly Hash H_DRAW_RECT = (Hash)0x3A618A217E5154F0UL;
+    static readonly Hash H_DRAW_MARKER = (Hash)0x28477EC23D892089UL;
     static readonly Hash H_SET_TEXT_FONT = (Hash)0x66E0276CC5F6B9DAUL;
     static readonly Hash H_SET_TEXT_SCALE = (Hash)0x07C837F9A01C34C9UL;
     static readonly Hash H_SET_TEXT_COLOUR = (Hash)0xBE6B23FFA53FB442UL;
@@ -102,7 +103,7 @@ public class ExhaustPops : Script
     static int CustomMode { get { return ExtraStart + ExtraRgb.Length; } }
     static int ModeCount { get { return ExtraStart + ExtraRgb.Length + 1; } }
 
-    const int MenuItems = 26;   // so muc trong menu
+    const int MenuItems = 27;   // so muc trong menu
 
     // ---- cai dat ----
     bool enabled = true;
@@ -119,6 +120,7 @@ public class ExhaustPops : Script
     bool bigFlame = false;
     int flameFx = 0;     // 0 veh_backfire, 1 veh_nitrous, 2 exp_grd_flare, 3 Tu dong
     bool glow = false;
+    int customFlame = 1;   // 0 tat, 1 khi chon mau dung lua script, 2 luon dung lua script
     int flameBursts = 3;
     float rotZ = 0f;
     bool playSound = true, playSub = true;
@@ -134,6 +136,10 @@ public class ExhaustPops : Script
     readonly List<string> popNames = new List<string>();
     readonly List<string> setNames = new List<string>();
     readonly List<Vector3> glowOffs = new List<Vector3>();
+    class ScriptFlame { public Vector3 Off; public float R, G, B; }
+    readonly List<ScriptFlame> scriptFlames = new List<ScriptFlame>();
+    int scriptFlameUntil, scriptFlameVeh;
+    const int ScriptFlameMs = 170;
     SoundPlayer sub;
     int ampSkipped;
     bool audioErrorShown;
@@ -223,6 +229,7 @@ public class ExhaustPops : Script
             bigFlame = PBool(g("Effect.BigFlame", "false"), false);
             flameFx = ClampI(PInt(g("Effect.FlameFx", "0"), 0), 0, 3);
             glow = PBool(g("Effect.Glow", "false"), false);
+            customFlame = ClampI(PInt(g("Effect.CustomFlame", "1"), 1), 0, 2);
             flameBursts = ClampI(PInt(g("Effect.FlameBursts", "3"), 3), 1, 10);
             rotZ = PFloat(g("Effect.RotZ", "0"), 0f);
 
@@ -285,6 +292,9 @@ public class ExhaustPops : Script
             s.AppendLine("BigFlame=" + B(bigFlame));
             s.AppendLine("; flame effect: 0 veh_backfire (ignores colour tint), 1 veh_nitrous, 2 exp_grd_flare, 3 auto (veh_backfire when colour is default, veh_nitrous when a colour is chosen)");
             s.AppendLine("FlameFx=" + flameFx);
+            s.AppendLine("; script-drawn coloured flame (a chain of glowing 3D orbs at the exhaust, always shows your colour):");
+            s.AppendLine("; 0 off (particle effect only), 1 use it when a colour is chosen (default colour keeps the original effect), 2 always use it");
+            s.AppendLine("CustomFlame=" + customFlame);
             s.AppendLine("; coloured light at exhaust (made the screen flicker, keep false)");
             s.AppendLine("Glow=" + B(glow));
             s.AppendLine("; number of flame particles per exhaust per pop (1-6)");
@@ -524,6 +534,7 @@ public class ExhaustPops : Script
             fxLoaded = true;
         }
         glowOffs.Clear();
+        scriptFlames.Clear();
         bool found = false;
         foreach (string bone in BoneNames)
         {
@@ -555,6 +566,21 @@ public class ExhaustPops : Script
         glowHandle = v.Handle;
         glowUntil = Game.GameTime + 100;
 
+        // lua script: chuoi cau 3D mang dung mau da chon (thay cho hieu ung hat khong an mau)
+        bool script = customFlame == 2 || (customFlame == 1 && colorMode > 0);
+        if (script)
+        {
+            float sr, sg, sb;
+            ModeColor(colorMode, Game.GameTime / 400.0, out sr, out sg, out sb);
+            glowR = sr; glowG = sg; glowB = sb;
+            ScriptFlame sf = new ScriptFlame();
+            sf.Off = off; sf.R = sr; sf.G = sg; sf.B = sb;
+            scriptFlames.Add(sf);
+            scriptFlameUntil = Game.GameTime + ScriptFlameMs;
+            scriptFlameVeh = v.Handle;
+            return;
+        }
+
         // hieu ung thuc su dung: che do Tu dong -> co mau thi dung veh_nitrous (an mau)
         int fx = flameFx;
         if (fx == 3) fx = colorMode > 0 ? 1 : 0;
@@ -572,6 +598,41 @@ public class ExhaustPops : Script
             }
             Function.Call(H_START_PARTICLE_FX_NON_LOOPED_ON_ENTITY, FxNames[fx], v.Handle,
                           off.X, off.Y, off.Z, 0f, 0f, rotZ, scale, false, false, false);
+        }
+    }
+
+    // ve ngon lua mau bang chuoi cau mo 3D dat sau mieng ong po (co chieu sau nen bi than xe che dung)
+    void DrawScriptFlames(Vehicle v)
+    {
+        int now = Game.GameTime;
+        if (scriptFlames.Count == 0 || now >= scriptFlameUntil || scriptFlameVeh != v.Handle) return;
+
+        float life = (scriptFlameUntil - now) / (float)ScriptFlameMs;   // 1 -> 0
+        float s = flameScale * 0.5f * (bigFlame ? 1.5f : 1f) * (0.8f + 0.12f * flameBursts);
+        float dirSign = Math.Cos(rotZ * Math.PI / 180.0) >= 0.0 ? -1f : 1f;   // RotZ=180 doi huong lua
+        float[] dist = { 0.04f, 0.20f, 0.40f, 0.64f };
+        float[] size = { 0.17f, 0.22f, 0.17f, 0.09f };
+        float[] alpha = { 230f, 175f, 120f, 70f };
+        float[] hot = { 0.55f, 0.25f, 0f, 0f };   // loi nong trang hon
+
+        foreach (ScriptFlame f in scriptFlames)
+        {
+            for (int k = 0; k < 4; k++)
+            {
+                float jx = (float)(rng.NextDouble() - 0.5) * 0.04f * s;
+                float jz = (float)(rng.NextDouble() - 0.5) * 0.04f * s;
+                float reach = dist[k] * s * (1.15f - 0.15f * life);
+                Vector3 pos = v.GetOffsetPosition(new Vector3(f.Off.X + jx, f.Off.Y + dirSign * reach, f.Off.Z + jz));
+                float sz = size[k] * s * (0.6f + 0.4f * life);
+                float flick = 0.8f + 0.2f * (float)rng.NextDouble();
+                int a = (int)Clamp(alpha[k] * life * flick, 0f, 255f);
+                if (a <= 2) continue;
+                int cr = (int)(Clamp(f.R + (1f - f.R) * hot[k], 0f, 1f) * 255f);
+                int cg = (int)(Clamp(f.G + (1f - f.G) * hot[k], 0f, 1f) * 255f);
+                int cb = (int)(Clamp(f.B + (1f - f.B) * hot[k], 0f, 1f) * 255f);
+                Function.Call(H_DRAW_MARKER, 28, pos.X, pos.Y, pos.Z, 0f, 0f, 0f, 0f, 0f, 0f, sz, sz, sz,
+                              cr, cg, cb, a, false, false, 2, false, 0, 0, false);
+            }
         }
     }
 
@@ -654,6 +715,7 @@ public class ExhaustPops : Script
         }
 
         DrawGlow(v);
+        DrawScriptFlames(v);
 
         float gas = Function.Call<float>(H_GET_CONTROL_NORMAL, 0, 71);
         float brake = Function.Call<float>(H_GET_CONTROL_NORMAL, 0, 72);
@@ -752,7 +814,7 @@ public class ExhaustPops : Script
     //  0 no po | 1 am thanh | 2 am phu | 3 bo am thanh | 4 nguong ga/phanh | 5 toc do toi thieu | 6 khoang min | 7 khoang max
     //  8 co lua | 9 che do kich hoat | 10 so tia lua | 11 am luong | 12 no khi len so | 13 MAU LUA | 14 Custom R | 15 Custom G
     //  16 Custom B | 17 no tu dong | 18 ngon ngu | 19 lua lon | 20 no khi chay | 21 am thanh no | 22 nhip khi chay
-    //  23 hieu ung lua | 24 loat no | 25 luu
+    //  23 hieu ung lua | 24 lua mau script | 25 loat no | 26 luu
     void Change(int dir)
     {
         switch (sel)
@@ -809,8 +871,9 @@ public class ExhaustPops : Script
                 break;
             case 22: cruiseStyle = (cruiseStyle + dir + 5) % 5; break;
             case 23: flameFx = (flameFx + dir + 4) % 4; break;
-            case 24: volleyMode = (volleyMode + dir + 4) % 4; break;
-            case 25: SaveConfig(); break;
+            case 24: customFlame = (customFlame + dir + 3) % 3; break;
+            case 25: volleyMode = (volleyMode + dir + 4) % 4; break;
+            case 26: SaveConfig(); break;
         }
     }
 
@@ -843,7 +906,7 @@ public class ExhaustPops : Script
             case 13:
                 {
                     string s = (vi ? "MÀU LỬA " : "FLAME COLOUR ") + "[" + colorMode + "/" + (ModeCount - 1) + "]: " + ModeName(colorMode);
-                    if (colorMode > 0 && flameFx == 0)
+                    if (colorMode > 0 && flameFx == 0 && customFlame == 0)
                         s += vi ? "  (veh_backfire không ăn màu)" : "  (veh_backfire ignores colour)";
                     return s;
                 }
@@ -877,11 +940,17 @@ public class ExhaustPops : Script
                 }
             case 24:
                 {
+                    string[] t = vi ? new[] { "Tắt (chỉ hiệu ứng hạt)", "Khi chọn màu (thay hiệu ứng gốc)", "Luôn dùng (thay hiệu ứng gốc)" }
+                                    : new[] { "Off (particle effect only)", "When a colour is chosen (replaces effect)", "Always (replaces effect)" };
+                    return (vi ? "Lửa màu vẽ bằng script: " : "Script-drawn coloured flame: ") + t[customFlame];
+                }
+            case 25:
+                {
                     string[] t = vi ? new[] { "Tắt", "Mỗi 3-4 giây", "Mỗi 6-7 giây", "Mỗi 3-7 giây" }
                                     : new[] { "Off", "Every 3-4 s", "Every 6-7 s", "Every 3-7 s" };
                     return (vi ? "Loạt nổ: " : "Volley pops: ") + t[volleyMode];
                 }
-            case 25: return vi ? "[ Lưu vào file ini ]" : "[ Save to ini ]";
+            case 26: return vi ? "[ Lưu vào file ini ]" : "[ Save to ini ]";
         }
         return "";
     }
